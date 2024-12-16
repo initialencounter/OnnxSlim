@@ -49,19 +49,57 @@ class TestModelZoo:
     def test_transformer_encoder(self, request):
         name = request.node.originalname[len("test_") :]
         filename = f"{MODELZOO_PATH}/{name}/{name}.onnx"
-        summary = summarize_model(slim(filename))
-        print_model_info_as_table(request.node.name, summary)
-        assert summary["op_type_counts"]["Mul"] == 57
-        assert summary["op_type_counts"]["Div"] == 53
+        summary = summarize_model(slim(filename), tag=request.node.name)
+        print_model_info_as_table(summary)
+        assert summary.op_type_counts["Mul"] == 57
+        assert summary.op_type_counts["Div"] == 53
 
     def test_uiex(self, request):
         name = request.node.originalname[len("test_") :]
         filename = f"{MODELZOO_PATH}/{name}/{name}.onnx"
-        summary = summarize_model(slim(filename))
-        print_model_info_as_table(request.node.name, summary)
-        assert summary["op_type_counts"]["Range"] == 0
-        assert summary["op_type_counts"]["Floor"] == 0
-        assert summary["op_type_counts"]["Concat"] == 54
+        summary = summarize_model(slim(filename), tag=request.node.name)
+        print_model_info_as_table(summary)
+        assert summary.op_type_counts["Range"] == 0
+        assert summary.op_type_counts["Floor"] == 0
+        assert summary.op_type_counts["Concat"] == 54
+
+    def test_qwen_vl_vision_encoder(self, request):
+        name = request.node.originalname[len("test_") :]
+        filename = f"{MODELZOO_PATH}/{name}/{name}.onnx"
+        summary = summarize_model(slim(filename), tag=request.node.name)
+        print_model_info_as_table(summary)
+        with tempfile.TemporaryDirectory() as tempdir:
+            slim(filename, os.path.join(tempdir, f"{name}_slim.onnx"))
+            import numpy as np
+            import onnxruntime as ort
+
+            ort_sess = ort.InferenceSession(os.path.join(tempdir, f"{name}_slim.onnx"))
+            outputs = ort_sess.run(
+                None,
+                {"pixel_values": np.random.rand(256, 1176).astype(np.float32), "grid_thw": np.array([[1, 16, 16]])},
+            )
+            print(f"{outputs[0].shape=}")  # (64, 16)
+
+    def test_layer_normalization_2d_axis0_expanded_ver18(self, request):
+        name = request.node.originalname[len("test_") :]
+        filename = f"{MODELZOO_PATH}/{name}/{name}.onnx"
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            slim(filename, os.path.join(tempdir, f"{name}_slim.onnx"), model_check=True)
+            summary = summarize_model(os.path.join(tempdir, f"{name}_slim.onnx"), tag=request.node.name)
+            assert summary.op_type_counts["Reshape"] == 1
+
+    def test_padconv(self, request):
+        name = request.node.originalname[len("test_") :]
+        filename = f"{MODELZOO_PATH}/{name}/{name}.onnx"
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            slim(
+                filename,
+                os.path.join(tempdir, f"{name}_slim.onnx"),
+                model_check=True,
+                input_shapes=["/encoder/encoders0/encoders0.0/self_attn/Transpose_2_output_0:1,516,32"],
+            )
 
 
 if __name__ == "__main__":

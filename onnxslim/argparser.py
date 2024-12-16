@@ -1,9 +1,16 @@
 import argparse
 import dataclasses
+from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
 from dataclasses import dataclass, field
-from typing import List, Optional, Type
+from typing import List, Optional, Type, Union, get_args, get_origin
 
 import onnxslim
+
+
+def _get_inner_type(arg_type):
+    if get_origin(arg_type) is Union:
+        return next((t for t in get_args(arg_type) if t is not type(None)), str)
+    return arg_type
 
 
 @dataclass
@@ -109,8 +116,11 @@ class CheckerArguments:
     verbose: bool = field(default=False, metadata={"help": "verbose mode, default False."})
 
 
-class ArgumentParser:
-    def __init__(self, *argument_dataclasses: Type):
+class OnnxSlimArgumentParser(ArgumentParser):
+    def __init__(self, *argument_dataclasses: Type, **kwargs):
+        if "formatter_class" not in kwargs:
+            kwargs["formatter_class"] = ArgumentDefaultsHelpFormatter
+        super().__init__(**kwargs)
         self.argument_dataclasses = argument_dataclasses
         self.parser = argparse.ArgumentParser(
             description="OnnxSlim: A Toolkit to Help Optimizer Onnx Model",
@@ -120,13 +130,19 @@ class ArgumentParser:
 
     def _add_arguments(self):
         for dataclass_type in self.argument_dataclasses:
+            if dataclass_type is ModelArguments:
+                continue
             for field_name, field_def in dataclass_type.__dataclass_fields__.items():
-                arg_type = field_def.type
+                arg_type = _get_inner_type(field_def.type)
                 default_value = field_def.default if field_def.default is not field_def.default_factory else None
                 help_text = field_def.metadata.get("help", "")
-                nargs = "+" if arg_type == Optional[List[str]] else None
+                nargs = "+" if get_origin(arg_type) == list else None
                 choices = field_def.metadata.get("choices", None)
-
+                if choices and default_value is not None and default_value not in choices:
+                    raise ValueError(
+                        f"Invalid default value '{default_value}' for argument '{field_name}'. Must be one of {choices}."
+                    )
+                arg_type = get_args(arg_type)[0] if get_args(arg_type) else arg_type
                 if arg_type == bool:
                     self.parser.add_argument(
                         f"--{field_name.replace('_', '-')}",
@@ -137,7 +153,7 @@ class ArgumentParser:
                 else:
                     self.parser.add_argument(
                         f"--{field_name.replace('_', '-')}",
-                        type=arg_type if arg_type != Optional[List[str]] else str,
+                        type=arg_type,
                         default=default_value,
                         nargs=nargs,
                         choices=choices,
@@ -150,6 +166,14 @@ class ArgumentParser:
         self.parser.add_argument("-v", "--version", action="version", version=onnxslim.__version__)
 
     def parse_args_into_dataclasses(self):
+        # Pre-parse arguments to check for `--inspect`
+        pre_parsed_args, _ = self.parser.parse_known_args()
+        if pre_parsed_args.inspect:
+            for action in self.parser._actions:
+                if action.dest == "input_model":
+                    action.nargs = "+"
+                    break
+
         args = self.parser.parse_args()
         args_dict = vars(args)
 
